@@ -19,7 +19,7 @@ void closeDoor() ;
 bool isObservableTime(DateTime dt) ;
 void writeTime(DateTime currentDate) ;
 
-#include "GaragenAutomatikV2.ino"
+#include "GarageDoorCloser.ino"
 
 
 #endif
