@@ -1,40 +1,36 @@
 /*
-  Garagentorsteuerung
+ Garagentorsteuerung
 
-  Dieser Sketch sorgt dafür dass das Garagentor
-  zwischen 22:00 und 6:00 dann automatisch geschlossen
-  wird, wenn es länger als 10 Minuten offen stehen bleibt
-  oder schon vor 22:00 geöffnet wurde.
-   Es werden jeweils über die serielle Schnittstelle folgende
-  Aktionen ausgegeben:
-  TorOben: wenn die torOben lichtschranke von offen nach unterbrochen wechselt
-  torUnten: wenn die torUnten
-  Bewegung runter wenn die torOben von unterbrochen nach offen wechselt
-  Bewegung hoch wenn der Kontakt TorUnten verlassen wird.
+ Dieser Sketch sorgt dafür dass das Garagentor
+ zwischen 22:00 und 6:00 dann automatisch geschlossen
+ wird, wenn es länger als eine bestimmte Dauer offen steht
+ oder schon vor 22:00 geöffnet wurde.
 
-  Uhr (RTC)
-  ---------
-  Die Uhr ist ein fertiges Modul welches mit I2c angebunden wird. 
-  Zum stellen der Uhr muss der Sketch neu kompiliert werden und hochgeladen werden. 
-  
-  RTC SCL an A5
-  RTC SDA an A4
-  
-  
+ Es kann aber auch manuell geschlossen werden.
 
-  LED Pin 13
-  blinkt 200ms an 3000ms aus wenn das Tor oben ist (ausserhalb der Überwachungszeit)
-  blinkt 200ms an 500ms aus wenn das Tor oben ist (innerhalb der Überwachunszeit)
-  an wenn das Tor hoch oder runter fährt
-  aus wenn das Tor unten ist
-*/
+ RTC SCL an A5
+ RTC SDA an A4
+
+ LED Pin 13 (controlLed)
+ blinkt 200ms an 3000ms aus wenn das Tor oben ist (ausserhalb der Überwachungszeit)
+ blinkt 200ms an 500ms aus wenn das Tor oben ist (innerhalb der Überwachunszeit)
+ an wenn das Tor hoch oder runter fährt
+ aus wenn das Tor unten ist
+ */
 #include "Arduino.h"
-#include <Wire.h>
 #include <RTClib.h>
 #include <Time.h>
+#include "BlinkLed.h"
 RTC_DS1307 RTC;
+BlinkLed controlLed;
+BlinkLed doorOpenLed;
+BlinkLed doorCloseLed;
 
-#define debugging 0
+/**
+ * debugging = 0: normaler Betrieb über RTC-Zeit-Modul
+ * debugging = 1: Testbetrieb
+ */
+#define xdebugging
 
 // HIGH signal bedeutet Kontakt geschlosssen
 #define doorCloseSensePin  11
@@ -42,64 +38,48 @@ RTC_DS1307 RTC;
 // HIGH signal bedeutet Kontakt geschlosssen
 #define doorOpenSensePin   12
 #define doorOpenLedPin  10
-
 #define doorControlPin  2
 
 // Relais-Pin
-#define observeControlPin  13
+#define controlLedPin  13
 
 int doorOpenState = -1;
 int doorCloseState = -1;
-unsigned long int closeTime ;
+unsigned long int closeTime;
 bool doorObserve = false;
 
 // in seconds
-#define observeTime 20// 10 Minuten
+#define observeTime 20
 
-int ledState = LOW;
-unsigned long int  ledStateChange;
-int  ledOnTime ;
-int ledOffTime ;
 int writeCounter = 0;
 
 int currentObservableTime = -1; //0: nein, 1: ja; -1: undefined
 
 void setup() {
   Serial.begin(9600);
-  Wire.begin();
-  RTC.begin();
+  controlLed.begin(controlLedPin, "ControlLed");
+  controlLed.setBlinkRatio(0, 0);
 
-  // initialize digital pins
-  pinMode(doorOpenSensePin, INPUT_PULLUP);
-  pinMode(doorCloseSensePin, INPUT_PULLUP);
-  pinMode(doorOpenLedPin, OUTPUT);
-  pinMode(doorCloseLedPin, OUTPUT);
+  doorOpenLed.begin(doorOpenLedPin, "OpenLed");
+  doorOpenLed.setBlinkRatio(0, 0);
 
-  pinMode(doorControlPin, OUTPUT);
-  pinMode(observeControlPin, OUTPUT);
-  digitalWrite(doorControlPin, HIGH);
-  // keep initially the pin states of the doorPins
-  doorCloseState = digitalRead(doorCloseSensePin);
-  doorOpenState = digitalRead(doorOpenSensePin);
-  Serial.println("Garage ");
-
-
-
-  if (! RTC.isrunning()) {
-    Serial.println("set time ");
-    // following line sets the RTC to the date & time this sketch was compiled
-    RTC.adjust(DateTime(__DATE__, __TIME__));
-  }
-  writeTime(RTC.now());
+  doorCloseLed.begin(doorCloseLedPin, "CloseLed");
+  doorCloseLed.setBlinkRatio(0, 0);
 }
 
 void loop() {
+#ifdef debugging
   DateTime now = RTC.now();
   // wenn sich die observable time aendert
   int newObservableTime = 0;
   if (isObservableTime(RTC.now())) {
     newObservableTime = 1;
   }
+#else
+  DateTime now = -1;
+  int newObservableTime = 1;
+  Serial.write("debugging mode\n");
+#endif
 
   if (newObservableTime != currentObservableTime) {
     // wechsel von observabl nach not observable oder umgekehrt
@@ -109,11 +89,11 @@ void loop() {
     if (currentObservableTime == 1) {
       writeTime(RTC.now());
       Serial.write("switch to observable time\n");
-      setBlinkRatio(10000, 0);
+      controlLed.setBlinkRatio(10000, 0);
     } else {
       writeTime(RTC.now());
       Serial.write("switch to NON-observable time\n");
-      setBlinkRatio(0, 10000);
+      controlLed.setBlinkRatio(0, 10000);
     }
   }
 
@@ -124,12 +104,12 @@ void loop() {
       Serial.write('.');
       writeCounter++;
       if (writeCounter > 50) {
-        writeCounter = 0 ;
+        writeCounter = 0;
         Serial.write("\n");
         Serial.write("closing in ");
-        unsigned long int remTime =  closeTime - now.unixtime() ;
+        unsigned long int remTime = closeTime - now.unixtime();
         char buf[9];
-        sprintf(buf, "%04u", remTime);
+        sprintf(buf, "%04lu", remTime);
         Serial.println(buf);
         Serial.write("\n");
       }
@@ -143,48 +123,20 @@ void loop() {
   digitalWrite(doorCloseLedPin, digitalRead(doorCloseSensePin));
   digitalWrite(doorOpenLedPin, digitalRead(doorOpenSensePin));
 
-  checkLedState(millis());
-
+  controlLed.check();
+  doorOpenLed.check();
+  doorCloseLed.check();
   delay(50);
 }
-
-void setBlinkRatio(int on, int off) {
-  // stop current blinking;
-  Serial.print("blink: on=");
-  Serial.print(on);
-  Serial.print(", off=");
-  Serial.println(off);
-  digitalWrite(observeControlPin, HIGH);
-  ledState = HIGH;
-  ledStateChange = millis() + on;
-  ledOnTime = on;
-  ledOffTime = off;
-}
-
-void checkLedState(unsigned long  currTime) {
-  if (currTime >= ledStateChange ) {
-    if (ledState == HIGH) {
-      digitalWrite(observeControlPin, LOW);
-      ledStateChange = currTime + ledOffTime;
-      ledState = LOW;
-    } else {
-      digitalWrite(observeControlPin, HIGH);
-      ledStateChange = currTime + ledOnTime;
-      ledState = HIGH;
-    }
-  }
-}
-
 
 boolean doorClosed() {
   int newState = digitalRead(doorCloseSensePin);
   digitalWrite(doorCloseLedPin, newState);
-  if (newState != doorCloseState ) {
+  if (newState != doorCloseState) {
     writeTime(RTC.now());
     if (newState == LOW) {
       Serial.println("door down");
-    }
-    else {
+    } else {
       Serial.println("door moving up");
     }
     doorCloseState = newState;
@@ -195,17 +147,16 @@ boolean doorClosed() {
 boolean doorOpen() {
   int newState = digitalRead(doorOpenSensePin);
   digitalWrite(doorOpenLedPin, newState);
-  if (newState != doorOpenState ) {
+  if (newState != doorOpenState) {
     writeTime(RTC.now());
     if (newState == LOW) {
       Serial.println("door top");
       if (isObservableTime(RTC.now())) {
-        setBlinkRatio(800, 800);
+        controlLed.setBlinkRatio(800, 800);
 
         startObserve();
       }
-    }
-    else {
+    } else {
       Serial.println("door moving down");
       if (isObservableTime(RTC.now())) {
         stopObserve();
@@ -221,15 +172,15 @@ void startObserve() {
   Serial.println("start observing");
   doorObserve = true;
   closeTime = RTC.now().unixtime() + observeTime;
-  DateTime dt7 (closeTime);
-  writeTime( dt7);
+  DateTime dt7(closeTime);
+  writeTime(dt7);
 
 }
 
 void stopObserve() {
   Serial.println("stop observing");
   doorObserve = false;
-  setBlinkRatio(10000, 0);
+  controlLed.setBlinkRatio(10000, 0);
 }
 
 void closeDoor() {
@@ -237,23 +188,22 @@ void closeDoor() {
   Serial.println("close door now");
   digitalWrite(doorControlPin, LOW);
   delay(1000);
-  setBlinkRatio(100, 100);
+  controlLed.setBlinkRatio(100, 100);
 
   while (doorOpen()) {
     delay(1000);
     Serial.println(" door not moving");
-    checkLedState(millis());
   }
   digitalWrite(doorControlPin, HIGH);
   Serial.println(" door moving ");
 }
 
 bool isObservableTime(DateTime dt) {
-  #ifdef debugging
+#ifdef debugging
   return (dt.hour() < 7 || dt.hour() >= 22);
-  #else
-   return (dt.second() >= 30);
-  #endif
+#else
+  return (dt.second() >= 30);
+#endif
 }
 
 void writeTime(DateTime currentDate) {
@@ -269,6 +219,4 @@ void writeTime(DateTime currentDate) {
   Serial.print('.');
   Serial.println(currentDate.year());
 }
-
-
 
